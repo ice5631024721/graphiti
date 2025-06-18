@@ -59,7 +59,7 @@ if not neo4j_uri or not neo4j_user or not neo4j_password:
     raise ValueError('NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD must be set')
 
 
-async def main():
+def main():
     #################################################
     # INITIALIZATION
     #################################################
@@ -85,7 +85,7 @@ async def main():
 
     try:
         # Initialize the graph database with graphiti's indices. This only needs to be done once.
-        await graphiti.build_indices_and_constraints()
+        graphiti.build_indices_and_constraints()
 
         #################################################
         # ADDING EPISODES
@@ -135,7 +135,7 @@ async def main():
 
         # Add episodes to the graph
         for i, episode in enumerate(episodes):
-            await graphiti.add_episode(
+            graphiti.add_episode(
                 name=f'Freakonomics Radio {i}',
                 episode_body=episode['content']
                 if isinstance(episode['content'], str)
@@ -157,7 +157,9 @@ async def main():
 
         # Perform a hybrid search combining semantic similarity and BM25 retrieval
         print("\nSearching for: 'Who was the California Attorney General?'")
-        results = await graphiti.search('Who was the California Attorney General?')
+        results =  asyncio.run(
+            graphiti.search('Who was the California Attorney General?')
+        )
 
         # Print search results
         print('\nSearch Results:')
@@ -186,8 +188,10 @@ async def main():
             print('\nReranking search results based on graph distance:')
             print(f'Using center node UUID: {center_node_uuid}')
 
-            reranked_results = await graphiti.search(
-                'Who was the California Attorney General?', center_node_uuid=center_node_uuid
+            reranked_results =  asyncio.run(
+                graphiti.search(
+                    'Who was the California Attorney General?', center_node_uuid=center_node_uuid
+                )
             )
 
             # Print reranked search results
@@ -222,10 +226,10 @@ async def main():
         node_search_config.limit = 5  # Limit to 5 results
 
         # Execute the node search
-        node_search_results = await graphiti._search(
+        node_search_results =  asyncio.run(graphiti._search(
             query='California Governor',
             config=node_search_config,
-        )
+        ))
 
         # Print node search results
         print('\nNode Search Results:')
@@ -251,9 +255,9 @@ async def main():
         #################################################
 
         # Close the connection
-        await graphiti.close()
+        asyncio.run(graphiti.close())
         print('\nConnection closed')
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
