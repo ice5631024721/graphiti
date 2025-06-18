@@ -24,6 +24,11 @@ from logging import INFO
 from dotenv import load_dotenv
 
 from graphiti_core import Graphiti
+from graphiti_core.cross_encoder.bge_reranker_client import BGERerankerClient
+from graphiti_core.cross_encoder.modelscope_reranker import ModelScopeRerankerClient
+from graphiti_core.embedder.ollama_embedder import OllamaEmbedderConfig, OllamaEmbedder
+from graphiti_core.llm_client import LLMConfig
+from graphiti_core.llm_client.ollama_client import OllamaClient
 from graphiti_core.nodes import EpisodeType
 from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
 
@@ -46,9 +51,9 @@ load_dotenv()
 
 # Neo4j connection parameters
 # Make sure Neo4j Desktop is running with a local DBMS started
-neo4j_uri = os.environ.get('NEO4J_URI', 'bolt://localhost:7687')
+neo4j_uri = os.environ.get('NEO4J_URI', 'bolt://127.0.0.1:7687')
 neo4j_user = os.environ.get('NEO4J_USER', 'neo4j')
-neo4j_password = os.environ.get('NEO4J_PASSWORD', '231179yr')
+neo4j_password = os.environ.get('NEO4J_PASSWORD', 'Dsg123456%')
 
 if not neo4j_uri or not neo4j_user or not neo4j_password:
     raise ValueError('NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD must be set')
@@ -63,8 +68,20 @@ async def main():
     # functionality
     #################################################
 
+    # 自定义配置
+    config = LLMConfig(base_url="http://127.0.0.1:11434", model="qwen2.5:7b")
+    client = OllamaClient(config=config)
+
+    embedding_config = OllamaEmbedderConfig(
+        embedding_model="quentinz/bge-large-zh-v1.5:latest",
+        embedding_dim=512
+    )
+    embedder = OllamaEmbedder(embedding_config)
+
+    # reranker = ModelScopeRerankerClient()
+
     # Initialize Graphiti with Neo4j connection
-    graphiti = Graphiti(neo4j_uri, neo4j_user, neo4j_password, "s", "s", "s")
+    graphiti = Graphiti(neo4j_uri, neo4j_user, neo4j_password, client, embedder, BGERerankerClient())
 
     try:
         # Initialize the graph database with graphiti's indices. This only needs to be done once.
@@ -84,7 +101,7 @@ async def main():
         episodes = [
             {
                 'content': 'Kamala Harris is the Attorney General of California. She was previously '
-                'the district attorney for San Francisco.',
+                           'the district attorney for San Francisco.',
                 'type': EpisodeType.text,
                 'description': 'podcast transcript',
             },
