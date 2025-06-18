@@ -24,11 +24,13 @@ from logging import INFO
 from dotenv import load_dotenv
 
 from graphiti_core import Graphiti
+from graphiti_core.cross_encoder import OpenAIRerankerClient
 from graphiti_core.cross_encoder.bge_reranker_client import BGERerankerClient
-from graphiti_core.cross_encoder.modelscope_reranker import ModelScopeRerankerClient
+from graphiti_core.embedder import OpenAIEmbedder, OpenAIEmbedderConfig
 from graphiti_core.embedder.ollama_embedder import OllamaEmbedderConfig, OllamaEmbedder
-from graphiti_core.llm_client import LLMConfig
+from graphiti_core.llm_client import LLMConfig, OpenAIClient
 from graphiti_core.llm_client.ollama_client import OllamaClient
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.nodes import EpisodeType
 from graphiti_core.search.search_config_recipes import NODE_HYBRID_SEARCH_RRF
 
@@ -68,20 +70,44 @@ async def main():
     # functionality
     #################################################
 
-    # 自定义配置
-    config = LLMConfig(base_url="http://127.0.0.1:11434", model="qwen2.5:7b")
-    client = OllamaClient(config=config)
-
-    embedding_config = OllamaEmbedderConfig(
-        embedding_model="quentinz/bge-large-zh-v1.5:latest",
-        embedding_dim=512
+    # # 自定义配置
+    # config = LLMConfig(base_url="http://127.0.0.1:11434", model="qwen2.5:7b")
+    # client = OllamaClient(config=config)
+    #
+    # embedding_config = OllamaEmbedderConfig(
+    #     embedding_model="quentinz/bge-large-zh-v1.5:latest",
+    #     embedding_dim=512
+    # )
+    # embedder = OllamaEmbedder(embedding_config)
+    #
+    # # reranker = ModelScopeRerankerClient()
+    #
+    # # Initialize Graphiti with Neo4j connection
+    # graphiti = Graphiti(neo4j_uri, neo4j_user, neo4j_password, client, embedder, BGERerankerClient())
+    llm_config = LLMConfig(
+        api_key="abc",
+        model="qwen2.5:7b",
+        small_model="qwen2.5:7b",
+        base_url="http://localhost:11434/v1",
     )
-    embedder = OllamaEmbedder(embedding_config)
+    llm_client = OpenAIClient(config=llm_config)
 
-    # reranker = ModelScopeRerankerClient()
+    graphiti = Graphiti(
+        os.environ.get("NEO4J_URI") or "bolt://localhost:7687",
+        os.environ.get("NEO4J_USER") or "neo4j",
+        os.environ.get("NEO4J_PASSWORD") or "Dsg123456%",
+        llm_client=llm_client,
+        embedder=OpenAIEmbedder(
+            config=OpenAIEmbedderConfig(
+                api_key="abc",
+                embedding_model="quentinz/bge-large-zh-v1.5:latest",
+                embedding_dim=512,
+                base_url="http://localhost:11434/v1",
+            )
+        ),
+        cross_encoder=OpenAIRerankerClient(client=llm_client, config=llm_config),
+    )
 
-    # Initialize Graphiti with Neo4j connection
-    graphiti = Graphiti(neo4j_uri, neo4j_user, neo4j_password, client, embedder, BGERerankerClient())
 
     try:
         # Initialize the graph database with graphiti's indices. This only needs to be done once.
