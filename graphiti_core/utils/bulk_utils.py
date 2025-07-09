@@ -177,11 +177,14 @@ async def add_nodes_and_edges_bulk_tx(
 
 
 async def extract_nodes_and_edges_bulk(
-    clients: GraphitiClients, episode_tuples: list[tuple[EpisodicNode, list[EpisodicNode]]]
+    clients: GraphitiClients,
+    episode_tuples: list[tuple[EpisodicNode, list[EpisodicNode]]],
+    entity_types: dict[str, BaseModel] | None = None,
+    excluded_entity_types: list[str] | None = None,
 ) -> tuple[list[EntityNode], list[EntityEdge], list[EpisodicEdge]]:
     extracted_nodes_bulk = await semaphore_gather(
         *[
-            extract_nodes(clients, episode, previous_episodes)
+            extract_nodes(clients, episode, previous_episodes, entity_types, excluded_entity_types)
             for episode, previous_episodes in episode_tuples
         ]
     )
@@ -198,6 +201,7 @@ async def extract_nodes_and_edges_bulk(
                 episode,
                 extracted_nodes_bulk[i],
                 previous_episodes_list[i],
+                {},
                 episode.group_id,
             )
             for i, episode in enumerate(episodes)

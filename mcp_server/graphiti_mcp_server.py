@@ -42,6 +42,11 @@ DEFAULT_LLM_MODEL = 'gpt-4.1-mini'
 SMALL_LLM_MODEL = 'gpt-4.1-nano'
 DEFAULT_EMBEDDER_MODEL = 'text-embedding-3-small'
 
+# Semaphore limit for concurrent Graphiti operations.
+# Decrease this if you're experiencing 429 rate limit errors from your LLM provider.
+# Increase if you have high rate limits.
+SEMAPHORE_LIMIT = int(os.getenv('SEMAPHORE_LIMIT', 10))
+
 
 class Requirement(BaseModel):
     """A Requirement represents a specific need, feature, or functionality that a product or service must fulfill.
@@ -362,7 +367,7 @@ class GraphitiEmbedderConfig(BaseModel):
         model_env = os.environ.get('EMBEDDER_MODEL_NAME', '')
         model = model_env if model_env.strip() else DEFAULT_EMBEDDER_MODEL
 
-        azure_openai_endpoint = os.environ.get('AZURE_OPENAI_ENDPOINT', None)
+        azure_openai_endpoint = os.environ.get('AZURE_OPENAI_EMBEDDING_ENDPOINT', None)
         azure_openai_api_version = os.environ.get('AZURE_OPENAI_EMBEDDING_API_VERSION', None)
         azure_openai_deployment_name = os.environ.get(
             'AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME', None
@@ -385,7 +390,9 @@ class GraphitiEmbedderConfig(BaseModel):
 
             if not azure_openai_use_managed_identity:
                 # api key
-                api_key = os.environ.get('OPENAI_API_KEY', None)
+                api_key = os.environ.get('AZURE_OPENAI_EMBEDDING_API_KEY', None) or os.environ.get(
+                    'OPENAI_API_KEY', None
+                )
             else:
                 # Managed identity
                 api_key = None
@@ -589,6 +596,7 @@ async def initialize_graphiti():
             password=config.neo4j.password,
             llm_client=llm_client,
             embedder=embedder_client,
+            max_coroutines=SEMAPHORE_LIMIT,
         )
 
         # Destroy graph if requested
@@ -611,6 +619,7 @@ async def initialize_graphiti():
         logger.info(
             f'Custom entity extraction: {"enabled" if config.use_custom_entities else "disabled"}'
         )
+        logger.info(f'Using concurrency limit: {SEMAPHORE_LIMIT}')
 
     except Exception as e:
         logger.error(f'Failed to initialize Graphiti: {str(e)}')
@@ -628,12 +637,14 @@ def format_fact_result(edge: EntityEdge) -> dict[str, Any]:
     Returns:
         A dictionary representation of the edge with serialized dates and excluded embeddings
     """
-    return edge.model_dump(
+    result = edge.model_dump(
         mode='json',
         exclude={
             'fact_embedding',
         },
     )
+    result.get('attributes', {}).pop('fact_embedding', None)
+    return result
 
 
 # Dictionary to store queues for each group_id
@@ -744,7 +755,7 @@ async def add_memory(
     global graphiti_client, episode_queues, queue_workers
 
     if graphiti_client is None:
-        return {'error': 'Graphiti client not initialized'}
+        return ErrorResponse(error='Graphiti client not initialized')
 
     try:
         # Map string source to EpisodeType enum
@@ -806,13 +817,13 @@ async def add_memory(
             asyncio.create_task(process_episode_queue(group_id_str))
 
         # Return immediately with a success message
-        return {
-            'message': f"Episode '{name}' queued for processing (position: {episode_queues[group_id_str].qsize()})"
-        }
+        return SuccessResponse(
+            message=f"Episode '{name}' queued for processing (position: {episode_queues[group_id_str].qsize()})"
+        )
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error queuing episode task: {error_msg}')
-        return {'error': f'Error queuing episode task: {error_msg}'}
+        return ErrorResponse(error=f'Error queuing episode task: {error_msg}')
 
 
 @mcp.tool()
@@ -914,9 +925,13 @@ async def search_memory_facts(
     global graphiti_client
 
     if graphiti_client is None:
-        return {'error': 'Graphiti client not initialized'}
+        return ErrorResponse(error='Graphiti client not initialized')
 
     try:
+        # Validate max_facts parameter
+        if max_facts <= 0:
+            return ErrorResponse(error='max_facts must be a positive integer')
+
         # Use the provided group_ids or fall back to the default from config if none provided
         effective_group_ids = (
             group_ids if group_ids is not None else [config.group_id] if config.group_id else []
@@ -936,14 +951,14 @@ async def search_memory_facts(
         )
 
         if not relevant_edges:
-            return {'message': 'No relevant facts found', 'facts': []}
+            return FactSearchResponse(message='No relevant facts found', facts=[])
 
         facts = [format_fact_result(edge) for edge in relevant_edges]
-        return {'message': 'Facts retrieved successfully', 'facts': facts}
+        return FactSearchResponse(message='Facts retrieved successfully', facts=facts)
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error searching facts: {error_msg}')
-        return {'error': f'Error searching facts: {error_msg}'}
+        return ErrorResponse(error=f'Error searching facts: {error_msg}')
 
 
 @mcp.tool()
@@ -956,7 +971,7 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
     global graphiti_client
 
     if graphiti_client is None:
-        return {'error': 'Graphiti client not initialized'}
+        return ErrorResponse(error='Graphiti client not initialized')
 
     try:
         # We've already checked that graphiti_client is not None above
@@ -969,11 +984,11 @@ async def delete_entity_edge(uuid: str) -> SuccessResponse | ErrorResponse:
         entity_edge = await EntityEdge.get_by_uuid(client.driver, uuid)
         # Delete the edge using its delete method
         await entity_edge.delete(client.driver)
-        return {'message': f'Entity edge with UUID {uuid} deleted successfully'}
+        return SuccessResponse(message=f'Entity edge with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error deleting entity edge: {error_msg}')
-        return {'error': f'Error deleting entity edge: {error_msg}'}
+        return ErrorResponse(error=f'Error deleting entity edge: {error_msg}')
 
 
 @mcp.tool()
@@ -986,7 +1001,7 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
     global graphiti_client
 
     if graphiti_client is None:
-        return {'error': 'Graphiti client not initialized'}
+        return ErrorResponse(error='Graphiti client not initialized')
 
     try:
         # We've already checked that graphiti_client is not None above
@@ -999,11 +1014,11 @@ async def delete_episode(uuid: str) -> SuccessResponse | ErrorResponse:
         episodic_node = await EpisodicNode.get_by_uuid(client.driver, uuid)
         # Delete the node using its delete method
         await episodic_node.delete(client.driver)
-        return {'message': f'Episode with UUID {uuid} deleted successfully'}
+        return SuccessResponse(message=f'Episode with UUID {uuid} deleted successfully')
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error deleting episode: {error_msg}')
-        return {'error': f'Error deleting episode: {error_msg}'}
+        return ErrorResponse(error=f'Error deleting episode: {error_msg}')
 
 
 @mcp.tool()
@@ -1016,7 +1031,7 @@ async def get_entity_edge(uuid: str) -> dict[str, Any] | ErrorResponse:
     global graphiti_client
 
     if graphiti_client is None:
-        return {'error': 'Graphiti client not initialized'}
+        return ErrorResponse(error='Graphiti client not initialized')
 
     try:
         # We've already checked that graphiti_client is not None above
@@ -1034,7 +1049,7 @@ async def get_entity_edge(uuid: str) -> dict[str, Any] | ErrorResponse:
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error getting entity edge: {error_msg}')
-        return {'error': f'Error getting entity edge: {error_msg}'}
+        return ErrorResponse(error=f'Error getting entity edge: {error_msg}')
 
 
 @mcp.tool()
@@ -1050,14 +1065,14 @@ async def get_episodes(
     global graphiti_client
 
     if graphiti_client is None:
-        return {'error': 'Graphiti client not initialized'}
+        return ErrorResponse(error='Graphiti client not initialized')
 
     try:
         # Use the provided group_id or fall back to the default from config
         effective_group_id = group_id if group_id is not None else config.group_id
 
         if not isinstance(effective_group_id, str):
-            return {'error': 'Group ID must be a string'}
+            return ErrorResponse(error='Group ID must be a string')
 
         # We've already checked that graphiti_client is not None above
         assert graphiti_client is not None
@@ -1070,7 +1085,9 @@ async def get_episodes(
         )
 
         if not episodes:
-            return {'message': f'No episodes found for group {effective_group_id}', 'episodes': []}
+            return EpisodeSearchResponse(
+                message=f'No episodes found for group {effective_group_id}', episodes=[]
+            )
 
         # Use Pydantic's model_dump method for EpisodicNode serialization
         formatted_episodes = [
@@ -1084,7 +1101,7 @@ async def get_episodes(
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error getting episodes: {error_msg}')
-        return {'error': f'Error getting episodes: {error_msg}'}
+        return ErrorResponse(error=f'Error getting episodes: {error_msg}')
 
 
 @mcp.tool()
@@ -1093,7 +1110,7 @@ async def clear_graph() -> SuccessResponse | ErrorResponse:
     global graphiti_client
 
     if graphiti_client is None:
-        return {'error': 'Graphiti client not initialized'}
+        return ErrorResponse(error='Graphiti client not initialized')
 
     try:
         # We've already checked that graphiti_client is not None above
@@ -1105,11 +1122,11 @@ async def clear_graph() -> SuccessResponse | ErrorResponse:
         # clear_data is already imported at the top
         await clear_data(client.driver)
         await client.build_indices_and_constraints()
-        return {'message': 'Graph cleared successfully and indices rebuilt'}
+        return SuccessResponse(message='Graph cleared successfully and indices rebuilt')
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error clearing graph: {error_msg}')
-        return {'error': f'Error clearing graph: {error_msg}'}
+        return ErrorResponse(error=f'Error clearing graph: {error_msg}')
 
 
 @mcp.resource('http://graphiti/status')
@@ -1118,7 +1135,7 @@ async def get_status() -> StatusResponse:
     global graphiti_client
 
     if graphiti_client is None:
-        return {'status': 'error', 'message': 'Graphiti client not initialized'}
+        return StatusResponse(status='error', message='Graphiti client not initialized')
 
     try:
         # We've already checked that graphiti_client is not None above
@@ -1127,16 +1144,19 @@ async def get_status() -> StatusResponse:
         # Use cast to help the type checker understand that graphiti_client is not None
         client = cast(Graphiti, graphiti_client)
 
-        # Test Neo4j connection
-        await client.driver.verify_connectivity()
-        return {'status': 'ok', 'message': 'Graphiti MCP server is running and connected to Neo4j'}
+        # Test database connection
+        await client.driver.client.verify_connectivity()  # type: ignore
+
+        return StatusResponse(
+            status='ok', message='Graphiti MCP server is running and connected to Neo4j'
+        )
     except Exception as e:
         error_msg = str(e)
         logger.error(f'Error checking Neo4j connection: {error_msg}')
-        return {
-            'status': 'error',
-            'message': f'Graphiti MCP server is running but Neo4j connection failed: {error_msg}',
-        }
+        return StatusResponse(
+            status='error',
+            message=f'Graphiti MCP server is running but Neo4j connection failed: {error_msg}',
+        )
 
 
 async def initialize_server() -> MCPConfig:
